@@ -6,3 +6,4 @@ ngrok
 .DS_Store
 *.log
 .env
+restaurant-pos.tar.gz
