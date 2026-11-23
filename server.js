@@ -25,7 +25,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.get('/gohealthy-pos/v21', async (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // In-memory printer settings (persist across requests; reset on server restart)
 // For production use, these can be loaded from an env var or a JSON file
@@ -744,6 +746,154 @@ app.post('/api/staff/shift', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ---------- Customer Loyalty APIs ----------
+app.get('/api/customers/:phone', async (req, res) => {
+  const { phone } = req.params;
+  try {
+    const customer = await db.getCustomerByPhone(phone);
+    if (!customer) return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+    res.json(customer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/customers', async (req, res) => {
+  const { phone, name } = req.body;
+  if (!phone || !name) return res.status(400).json({ error: 'phone ve name zorunlu.' });
+  try {
+    const existing = await db.getCustomerByPhone(phone);
+    if (existing) return res.status(409).json({ error: 'Bu telefon numarası zaten kayıtlı.' });
+    const id = 'C' + Date.now();
+    await db.run(`INSERT INTO customers (id, phone, name, points, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)`,
+      [id, phone, name, new Date().toISOString(), new Date().toISOString()]);
+    const newCustomer = await db.getCustomerById(id);
+    const state = await db.getAppState();
+    io.emit('sync_state', state);
+    res.json(newCustomer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/customers/:id/points', async (req, res) => {
+  const { id } = req.params;
+  const { action, points } = req.body;
+  if (!action || typeof points !== 'number') return res.status(400).json({ error: 'action ve points gerekli.' });
+  try {
+    let result;
+    if (action === 'add') {
+      const newTotal = await db.addPoints(id, points);
+      result = { success: true, points: newTotal };
+    } else if (action === 'redeem') {
+      result = await db.redeemPoints(id, points);
+    } else {
+      return res.status(400).json({ error: 'Geçersiz action. add veya redeem.' });
+    }
+    const state = await db.getAppState();
+    io.emit('sync_state', state);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- External Orders Webhook ----------
+app.post('/api/external/orders', async (req, res) => {
+  const { provider, external_id, payload, status } = req.body;
+  if (!provider || !external_id) return res.status(400).json({ error: 'provider ve external_id zorunlu.' });
+  try {
+    const id = 'EO' + Date.now();
+    await db.run(
+      `INSERT INTO external_orders (id, provider, external_id, payload, status, received_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, provider, external_id, JSON.stringify(payload || {}), status || 'new', new Date().toISOString()]
+    );
+    const state = await db.getAppState();
+    io.emit('sync_state', state);
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Profit Report ----------
+app.get('/api/reports/profit', async (req, res) => {
+  const { start, end } = req.query;
+  try {
+    let rows;
+    if (start && end) {
+      rows = await db.all(`SELECT * FROM sales_history WHERE timestamp >= ? AND timestamp <= ?`, [start, end]);
+    } else {
+      rows = await db.all(`SELECT * FROM sales_history`);
+    }
+    let totalIncome = 0;
+    let totalCost = 0;
+    for (const r of rows) {
+      const items = JSON.parse(r.items);
+      for (const it of items) {
+        const menu = await db.get(`SELECT price, cost FROM menu_items WHERE id = ?`, [it.id]);
+        if (menu) {
+          const qty = Number(it.quantity);
+          totalIncome += (menu.price || 0) * qty;
+          totalCost += (menu.cost || 0) * qty;
+        }
+      }
+    }
+    const profit = totalIncome - totalCost;
+    res.json({ totalIncome, totalCost, profit });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Stock Alerts ----------
+app.get('/api/stock/alerts', async (req, res) => {
+  try {
+    const status = await db.getStockStatus();
+    const low = Object.entries(status).filter(([, s]) => s === 'low-stock').map(([id]) => id);
+    res.json({ lowStockItems: low });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Dashboard Summary ----------
+app.get('/api/dashboard/summary', async (req, res) => {
+  try {
+    const state = await db.getAppState();
+    const rows = await db.all(`SELECT * FROM sales_history`);
+    let income = 0, cost = 0;
+    for (const r of rows) {
+      const items = JSON.parse(r.items);
+      for (const it of items) {
+        const menu = await db.get(`SELECT price, cost FROM menu_items WHERE id = ?`, [it.id]);
+        if (menu) {
+          const qty = Number(it.quantity);
+          income += (menu.price || 0) * qty;
+          cost += (menu.cost || 0) * qty;
+        }
+      }
+    }
+    const profit = income - cost;
+    const stockStatus = await db.getStockStatus();
+    const low = Object.entries(stockStatus).filter(([, s]) => s === 'low-stock').map(([id]) => id);
+    res.json({ ...state, profit, lowStockItems: low });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Staff Sales ----------
+app.get('/api/staff/:id/sales', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const rows = await db.all(`SELECT * FROM staff_sales WHERE staff_id = ?`, [id]);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Stock refill action
 app.post('/api/settings/stock/refill', async (req, res) => {

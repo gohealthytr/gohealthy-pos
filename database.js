@@ -138,6 +138,7 @@ async function initDatabase() {
     categoryId TEXT,
     name TEXT,
     price REAL,
+    cost REAL,
     description TEXT,
     image TEXT,
     popular INTEGER,
@@ -149,7 +150,46 @@ async function initDatabase() {
     name TEXT,
     quantity REAL,
     unit TEXT,
-    minLimit REAL
+    minLimit REAL`
+
+
+  )`);
+
+  // New tables for extended features
+  await run(`CREATE TABLE IF NOT EXISTS external_orders (
+    id TEXT PRIMARY KEY,
+    provider TEXT,
+    external_id TEXT,
+    payload TEXT,
+    status TEXT,
+    received_at TEXT,
+    processed_at TEXT
+  )`);
+  await run(`CREATE TABLE IF NOT EXISTS customers (
+    id TEXT PRIMARY KEY,
+    phone TEXT UNIQUE,
+    name TEXT,
+    points INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT
+  )`);
+  await run(`CREATE TABLE IF NOT EXISTS menu_nutrition (
+    menu_item_id TEXT PRIMARY KEY,
+    calories REAL,
+    protein REAL,
+    carbs REAL,
+    fat REAL,
+    FOREIGN KEY(menu_item_id) REFERENCES menu_items(id)
+  )`);
+  await run(`CREATE TABLE IF NOT EXISTS staff_sales (
+    id TEXT PRIMARY KEY,
+    staff_id TEXT,
+    sale_id TEXT,
+    amount REAL,
+    commission REAL,
+    timestamp TEXT,
+    FOREIGN KEY(staff_id) REFERENCES staff(id),
+    FOREIGN KEY(sale_id) REFERENCES sales_history(id)
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS active_orders (
@@ -157,7 +197,10 @@ async function initDatabase() {
     items TEXT,
     discount REAL,
     orderType TEXT,
-    waiterId TEXT
+    waiterId TEXT,
+    timestamp TEXT,
+    customLabel TEXT,
+    note TEXT
   )`);
 
   try {
@@ -178,10 +221,33 @@ async function initDatabase() {
     waiterId TEXT,
     status TEXT,
     items TEXT,
+    timestamp TEXT,
+    note TEXT`
+
+    id TEXT PRIMARY KEY,
+    tableId TEXT,
+    tableName TEXT,
+    waiterId TEXT,
+    status TEXT,
+    items TEXT,
     timestamp TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS sales_history (
+    id TEXT PRIMARY KEY,
+    tableId TEXT,
+    tableName TEXT,
+    items TEXT,
+    subtotal REAL,
+    tax REAL,
+    discount REAL,
+    total REAL,
+    paymentMethod TEXT,
+    orderType TEXT,
+    waiterId TEXT,
+    timestamp TEXT,
+    note TEXT`
+
     id TEXT PRIMARY KEY,
     tableId TEXT,
     tableName TEXT,
@@ -229,6 +295,24 @@ async function initDatabase() {
     countedOdenmez REAL,
     totalRevenue REAL,
     totalExpenses REAL,
+    notes TEXT`
+
+    id TEXT PRIMARY KEY,
+    timestamp TEXT,
+    closedBy TEXT,
+    startingCash REAL,
+    expectedCash REAL,
+    countedCash REAL,
+    expectedCard REAL,
+    countedCard REAL,
+    expectedMealcard REAL,
+    countedMealcard REAL,
+    expectedOther REAL,
+    countedOther REAL,
+    expectedOdenmez REAL,
+    countedOdenmez REAL,
+    totalRevenue REAL,
+    totalExpenses REAL,
     notes TEXT
   )`);
 
@@ -249,10 +333,24 @@ async function initDatabase() {
     role TEXT,
     code TEXT,
     status TEXT,
+    shiftStart TEXT`
+
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    role TEXT,
+    code TEXT,
+    status TEXT,
     shiftStart TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS expenses (
+    id TEXT PRIMARY KEY,
+    description TEXT,
+    amount REAL,
+    category TEXT,
+    timestamp TEXT,
+    staffId TEXT`
+
     id TEXT PRIMARY KEY,
     description TEXT,
     amount REAL,
@@ -263,10 +361,17 @@ async function initDatabase() {
 
   await run(`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
+    value TEXT`
+
+    key TEXT PRIMARY KEY,
     value TEXT
   )`);
 
   // Seed default data
+
+    // New tables seeding (if needed)
+    // No initial data for external_orders, customers, menu_nutrition, staff_sales at startup
+
   const tablesCount = await get(`SELECT COUNT(*) as count FROM tables`);
   if (Number(tablesCount.count) === 0) {
     const defaultTables = [
@@ -1086,6 +1191,31 @@ async function getSetting(key) {
   }
 }
 
+// Loyalty point management functions
+async function addPoints(customerId, points) {
+  await run(`UPDATE customers SET points = points + ?, updated_at = ? WHERE id = ?`, [points, new Date().toISOString(), customerId]);
+  const row = await get(`SELECT points FROM customers WHERE id = ?`, [customerId]);
+  return row ? row.points : null;
+}
+
+async function redeemPoints(customerId, points) {
+  const row = await get(`SELECT points FROM customers WHERE id = ?`, [customerId]);
+  if (!row || row.points < points) {
+    return { success: false, reason: 'Insufficient points' };
+  }
+  await run(`UPDATE customers SET points = points - ?, updated_at = ? WHERE id = ?`, [points, new Date().toISOString(), customerId]);
+  const updated = await get(`SELECT points FROM customers WHERE id = ?`, [customerId]);
+  return { success: true, points: updated.points };
+}
+
+async function getCustomerByPhone(phone) {
+  return await get(`SELECT * FROM customers WHERE phone = ?`, [phone]);
+}
+
+async function getCustomerById(id) {
+  return await get(`SELECT * FROM customers WHERE id = ?`, [id]);
+}
+
 module.exports = {
   run,
   get,
@@ -1096,5 +1226,9 @@ module.exports = {
   getAppState,
   MENU_RECIPES,
   saveSetting,
-  getSetting
+  getSetting,
+  addPoints,
+  redeemPoints,
+  getCustomerByPhone,
+  getCustomerById
 };
