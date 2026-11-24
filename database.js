@@ -150,10 +150,8 @@ async function initDatabase() {
     name TEXT,
     quantity REAL,
     unit TEXT,
-    minLimit REAL`
-
-
-  )`);
+    minLimit REAL
+);`);
 
   // New tables for extended features
   await run(`CREATE TABLE IF NOT EXISTS external_orders (
@@ -164,7 +162,7 @@ async function initDatabase() {
     status TEXT,
     received_at TEXT,
     processed_at TEXT
-  )`);
+);`);
   await run(`CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     phone TEXT UNIQUE,
